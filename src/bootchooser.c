@@ -559,6 +559,61 @@ out:
 	return res;
 }
 
+typedef struct {
+	gint32 order;
+	gint32 left;
+} UBootSlotState;
+
+static gboolean _uboot_get_state(const gchar* target_bootname, UBootSlotState *state, GError **error)
+{
+	GString *boot_order = NULL;
+	gboolean res = FALSE;
+	GError *ierror = NULL;
+	gchar **bootnames = NULL;
+	gchar **bootname = NULL;
+	int i = 0;
+
+	g_return_val_if_fail(target_bootname, FALSE);
+	g_return_val_if_fail(state, FALSE);
+	g_return_val_if_fail(error == NULL || *error == NULL, FALSE);
+
+	res = uboot_env_get("BOOT_ORDER", &boot_order, &ierror);
+	if (!res) {
+		g_debug("%s", ierror->message);
+		g_propagate_error(error, ierror);
+		goto out;
+	}
+	bootnames = g_strsplit(boot_order->str, " ", -1);
+
+	for (i = 0, bootname = bootnames; *bootname; i++, bootname++) {
+		GString *value = NULL;
+		gchar *key = NULL;
+
+		if (g_strcmp0(*bootname, "") == 0) {
+			continue;
+		}
+
+		if (g_strcmp0(*bootname, target_bootname) == 0) {
+			continue;
+		}
+
+		key = g_strdup_printf("BOOT_%s_LEFT", *bootname);
+		res = uboot_env_get(key, &value, &ierror);
+		if (!res) {
+			g_debug("%s", ierror->message);
+			g_propagate_error(error, ierror);
+			goto out;
+		}
+
+		state->order = i;
+		state->left = g_ascii_strtoull(value->str, NULL, 16);
+		break;
+	}
+
+out:
+	return res;
+}
+
 /* Set slot status values */
 static gboolean uboot_set_state(RaucSlot *slot, gboolean good, GError **error)
 {
@@ -579,6 +634,96 @@ static gboolean uboot_set_state(RaucSlot *slot, gboolean good, GError **error)
 
 out:
 	g_free(key);
+	return res;
+}
+
+static RaucSlot *uboot_get_primary(GError **error) {
+	RaucSlot *primary = NULL;
+	GError *ierror = NULL;
+	gboolean res = FALSE;
+	GHashTableIter iter;
+	RaucSlot *slot;
+	gint32 first_order = INT_MAX;
+
+	g_return_val_if_fail(error == NULL || *error == NULL, FALSE);
+
+	g_hash_table_iter_init(&iter, r_context()->config->slots);
+	while (g_hash_table_iter_next(&iter, NULL, (gpointer*) &slot)) {
+		UBootSlotState state;
+
+		if (!slot->bootname) {
+			continue;
+		}
+
+		res = _uboot_get_state(slot->bootname, &state, &ierror);
+		if (!res) {
+			g_debug("%s", ierror->message);
+			g_clear_error(&ierror);
+			continue;
+		}
+
+		if (state.left == 0) {
+			continue;
+		}
+
+		if (state.order < first_order) {
+			primary = slot;
+			first_order = state.order;
+		}
+	}
+
+	if (!primary) {
+		g_set_error_literal(
+			error,
+			R_BOOTCHOOSER_ERROR,
+			R_BOOTCHOOSER_ERROR_PARSE_FAILED,
+			"Unable to obtain primary slot");
+	}
+
+	return primary;
+}
+
+static gboolean uboot_get_state(RaucSlot *slot, gboolean *good, GError **error) {
+	GString *boot_order = NULL;
+	gchar **bootnames;
+	GError *ierror = NULL;
+	gboolean res = FALSE;
+
+	g_return_val_if_fail(slot, FALSE);
+	g_return_val_if_fail(good, FALSE);
+	g_return_val_if_fail(error == NULL || *error == NULL, FALSE);
+
+	*good = FALSE;
+
+	res = uboot_env_get("BOOT_ORDER", &boot_order, &ierror);
+	if (!res) {
+		g_debug("%s", ierror->message);
+		g_propagate_error(error, ierror);
+		goto out;
+	}
+
+	bootnames = g_strsplit(boot_order->str, " ", -1);
+	for (gchar **bootname = bootnames; *bootname; bootname++) {
+		if (g_strcmp0(*bootname, slot->bootname) == 0) {
+			gchar *key = NULL;
+			GString *value = NULL;
+
+			key = g_strdup_printf("BOOT_%s_LEFT", slot->bootname);
+			res = uboot_env_get(key, &value, &ierror);
+			if (!res) {
+				g_debug("%s", ierror->message);
+				g_propagate_error(error, ierror);
+				goto out;
+			}
+
+			if (g_ascii_strtoull(value->str, NULL, 16) > 0) {
+				*good = TRUE;
+				break;
+			}
+		}
+	}
+
+out:
 	return res;
 }
 
@@ -1134,6 +1279,8 @@ gboolean r_boot_get_state(RaucSlot* slot, gboolean *good, GError **error)
 		res = barebox_get_state(slot, good, &ierror);
 	} else if (g_strcmp0(r_context()->config->system_bootloader, "efi") == 0) {
 		res = efi_get_state(slot, good, &ierror);
+	} else if (g_strcmp0(r_context()->config->system_bootloader, "uboot") == 0) {
+		res = uboot_get_state(slot, good, &ierror);
 	} else {
 		g_set_error(
 				error,
@@ -1200,6 +1347,8 @@ RaucSlot* r_boot_get_primary(GError **error)
 
 	if (g_strcmp0(r_context()->config->system_bootloader, "barebox") == 0) {
 		slot = barebox_get_primary(&ierror);
+	} else if (g_strcmp0(r_context()->config->system_bootloader, "uboot") == 0) {
+		slot = uboot_get_primary(&ierror);
 	} else if (g_strcmp0(r_context()->config->system_bootloader, "efi") == 0) {
 		slot = efi_get_primary(&ierror);
 	} else {
