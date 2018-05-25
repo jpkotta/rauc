@@ -21,7 +21,7 @@ GQuark r_bootchooser_error_quark(void)
 #define UBOOT_FWGETENV_NAME "fw_printenv"
 #define EFIBOOTMGR_NAME "efibootmgr"
 
-static GString *bootchooser_order_primay(RaucSlot *slot)
+static GString *bootchooser_order_primary(RaucSlot *slot)
 {
 	GString *order = g_string_sized_new(10);
 	GList *slots;
@@ -439,7 +439,7 @@ static gboolean grub_set_primary(RaucSlot *slot, GError **error)
 	g_return_val_if_fail(slot, FALSE);
 	g_return_val_if_fail(error == NULL || *error == NULL, FALSE);
 
-	order = bootchooser_order_primay(slot);
+	order = bootchooser_order_primary(slot);
 
 	g_ptr_array_add(pairs, g_strdup_printf("%s_OK=%i", slot->bootname, 1));
 	g_ptr_array_add(pairs, g_strdup_printf("%s_TRY=%i", slot->bootname, 0));
@@ -603,7 +603,7 @@ static gboolean uboot_set_primary(RaucSlot *slot, GError **error)
 		g_message("Unable to obtain BOOT_ORDER, using defaults");
 		g_clear_error(&ierror);
 
-		order_current = bootchooser_order_primay(slot);
+		order_current = bootchooser_order_primary(slot);
 	}
 
 	/* Iterate over current boot order */
@@ -1258,4 +1258,3 @@ gboolean r_boot_set_primary(RaucSlot *slot, GError **error)
 
 	return res;
 }
-
