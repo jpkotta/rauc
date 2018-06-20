@@ -593,7 +593,7 @@ static gboolean _uboot_get_state(const gchar* target_bootname, UBootSlotState *s
 			continue;
 		}
 
-		if (g_strcmp0(*bootname, target_bootname) == 0) {
+		if (g_strcmp0(*bootname, target_bootname) != 0) {
 			continue;
 		}
 
