@@ -3,7 +3,9 @@ sudo: required
 compiler: gcc-7
 dist: trusty
 before_install:
-  - sudo pip install --upgrade cpp-coveralls
+  - sudo add-apt-repository "deb http://archive.ubuntu.com/ubuntu/ xenial main restricted universe multiverse" -y
+  - sudo apt-get update -qq
+  - sudo apt-get install -qq libglib2.0-dev libjson-glib-dev
 addons:
   apt:
     packages:
@@ -25,6 +27,14 @@ addons:
     sources: &sources
       - ubuntu-toolchain-r-test
       - sourceline: 'deb http://archive.ubuntu.com/ubuntu/ trusty main restricted universe multiverse'
+  coverity_scan:
+    project:
+      name: "jluebbe/rauc"
+      description: "Robust Auto-Update Controller"
+    notification_email: jlu@pengutronix.de
+    build_command_prepend: "cov-configure --comptype gcc --compiler gcc-7 --template && ./autogen.sh && ./configure"
+    build_command: "make -j2"
+    branch_pattern: master
 before_script:
   - ./build-uncrustify.sh
 script:

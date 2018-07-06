@@ -68,9 +68,9 @@ static const gchar *supported_bootloaders[] = {"barebox", "grub", "uboot", "efi"
 gboolean load_config(const gchar *filename, RaucConfig **config, GError **error)
 {
 	GError *ierror = NULL;
-	RaucConfig *c = g_new0(RaucConfig, 1);
+	g_autoptr(RaucConfig) c = g_new0(RaucConfig, 1);
 	gboolean res = FALSE;
-	GKeyFile *key_file = NULL;
+	g_autoptr(GKeyFile) key_file = NULL;
 	gchar **groups;
 	gsize group_count;
 	GList *slotlist = NULL;
@@ -315,10 +315,20 @@ gboolean load_config(const gchar *filename, RaucConfig **config, GError **error)
 				goto free;
 			}
 
-			slot->ignore_checksum = g_key_file_get_boolean(key_file, groups[i], "ignore-checksum", &ierror);
+			slot->force_install_same = g_key_file_get_boolean(key_file, groups[i], "force-install-same", &ierror);
 			if (g_error_matches(ierror, G_KEY_FILE_ERROR, G_KEY_FILE_ERROR_KEY_NOT_FOUND)) {
-				slot->ignore_checksum = FALSE;
 				g_clear_error(&ierror);
+				/* try also deprecatet flag ignore-checksum */
+				slot->force_install_same = g_key_file_get_boolean(key_file, groups[i], "ignore-checksum", &ierror);
+				if (g_error_matches(ierror, G_KEY_FILE_ERROR, G_KEY_FILE_ERROR_KEY_NOT_FOUND)) {
+					slot->force_install_same = FALSE;
+					g_clear_error(&ierror);
+				}
+				else if (ierror) {
+					g_propagate_error(error, ierror);
+					res = FALSE;
+					goto free;
+				}
 			}
 			else if (ierror) {
 				g_propagate_error(error, ierror);
@@ -367,12 +377,10 @@ gboolean load_config(const gchar *filename, RaucConfig **config, GError **error)
 
 	res = TRUE;
 free:
-	if (!res) {
-		free_config(c);
-		c = NULL;
-	}
-	g_key_file_free(key_file);
-	*config = c;
+	if (res)
+		*config = g_steal_pointer(&c);
+	else
+		*config = NULL;
 	return res;
 }
 
@@ -522,7 +530,7 @@ gboolean read_slot_status(const gchar *filename, RaucSlotStatus *slotstatus, GEr
 {
 	GError *ierror = NULL;
 	gboolean res = FALSE;
-	GKeyFile *key_file = NULL;
+	g_autoptr(GKeyFile) key_file = NULL;
 
 	g_return_val_if_fail(filename, FALSE);
 	g_return_val_if_fail(slotstatus, FALSE);
@@ -540,15 +548,13 @@ gboolean read_slot_status(const gchar *filename, RaucSlotStatus *slotstatus, GEr
 
 	res = TRUE;
 free:
-	g_key_file_free(key_file);
-
 	return res;
 }
 
 gboolean write_slot_status(const gchar *filename, RaucSlotStatus *ss, GError **error)
 {
 	GError *ierror = NULL;
-	GKeyFile *key_file = NULL;
+	g_autoptr(GKeyFile) key_file = NULL;
 	gboolean res = FALSE;
 
 	key_file = g_key_file_new();
@@ -562,16 +568,13 @@ gboolean write_slot_status(const gchar *filename, RaucSlotStatus *ss, GError **e
 	}
 
 free:
-	g_key_file_free(key_file);
-
 	return res;
 }
 
 static void load_slot_status_locally(RaucSlot *dest_slot)
 {
 	GError *ierror = NULL;
-	gboolean res = FALSE;
-	gchar *slotstatuspath = NULL;
+	g_autofree gchar *slotstatuspath = NULL;
 
 	g_return_if_fail(dest_slot);
 
@@ -584,39 +587,38 @@ static void load_slot_status_locally(RaucSlot *dest_slot)
 		return;
 
 	/* read slot status */
-	g_message("mounting slot %s", dest_slot->device);
-	res = r_mount_slot(dest_slot, &ierror);
-	if (!res) {
-		g_message("Failed to mount slot %s: %s", dest_slot->device, ierror->message);
-		goto free;
+	if (!dest_slot->ext_mount_point) {
+		g_message("mounting slot %s", dest_slot->device);
+		if (!r_mount_slot(dest_slot, &ierror)) {
+			g_message("Failed to mount slot %s: %s", dest_slot->device, ierror->message);
+			g_clear_error(&ierror);
+			return;
+		}
 	}
 
 	slotstatuspath = g_build_filename(dest_slot->mount_point, "slot.raucs", NULL);
 
-	res = read_slot_status(slotstatuspath, dest_slot->status, &ierror);
-	if (!res) {
+	if (!read_slot_status(slotstatuspath, dest_slot->status, &ierror)) {
 		g_message("Failed to load status file %s: %s", slotstatuspath, ierror->message);
-		r_umount_slot(dest_slot, NULL);
-		goto free;
+		g_clear_error(&ierror);
 	}
 
-	res = r_umount_slot(dest_slot, &ierror);
-	if (!res) {
-		g_message("Failed to unmount slot %s: %s", dest_slot->device, ierror->message);
-		goto free;
+	if (!dest_slot->ext_mount_point) {
+		if (!r_umount_slot(dest_slot, &ierror)) {
+			g_message("Failed to unmount slot %s: %s", dest_slot->device, ierror->message);
+			g_clear_error(&ierror);
+			return;
+		}
 	}
-
-free:
-	g_clear_pointer(&slotstatuspath, g_free);
-	g_clear_error(&ierror);
 }
 
 static void load_slot_status_globally(void)
 {
 	GError *ierror = NULL;
 	GHashTable *slots = r_context()->config->slots;
-	GKeyFile *key_file = g_key_file_new();
-	gchar **groups, **group, *slotname;
+	g_autoptr(GKeyFile) key_file = g_key_file_new();
+	g_auto(GStrv) groups = NULL;
+	gchar **group, *slotname;
 	GHashTableIter iter;
 	RaucSlot *slot;
 
@@ -642,8 +644,6 @@ static void load_slot_status_globally(void)
 		g_debug("Load status for slot %s.", slot->name);
 		status_file_get_slot_status(key_file, *group, slot->status);
 	}
-	g_strfreev(groups);
-	g_clear_pointer(&key_file, g_key_file_free);
 
 	/* Set all other slots to the default status */
 	g_hash_table_iter_init(&iter, slots);
@@ -673,7 +673,7 @@ static gboolean save_slot_status_locally(RaucSlot *dest_slot, GError **error)
 {
 	GError *ierror = NULL;
 	gboolean res = FALSE;
-	gchar *slotstatuspath = NULL;
+	g_autofree gchar *slotstatuspath = NULL;
 
 	g_return_val_if_fail(dest_slot, FALSE);
 	g_return_val_if_fail(dest_slot->status, FALSE);
@@ -709,19 +709,16 @@ static gboolean save_slot_status_locally(RaucSlot *dest_slot, GError **error)
 	}
 
 free:
-	g_clear_pointer(&slotstatuspath, g_free);
-
 	return res;
 }
 
 static gboolean save_slot_status_globally(GError **error)
 {
-	GKeyFile *key_file = g_key_file_new();
+	g_autoptr(GKeyFile) key_file = g_key_file_new();
 	GError *ierror = NULL;
 	GHashTableIter iter;
 	RaucSlot *slot;
 	gboolean res;
-	gchar *group;
 
 	g_return_val_if_fail(error == NULL || *error == NULL, FALSE);
 	g_return_val_if_fail(r_context()->config->statusfile_path, FALSE);
@@ -731,19 +728,18 @@ static gboolean save_slot_status_globally(GError **error)
 	/* Save all slot status information */
 	g_hash_table_iter_init(&iter, r_context()->config->slots);
 	while (g_hash_table_iter_next(&iter, NULL, (gpointer*) &slot)) {
+		g_autofree gchar *group;
+
 		if (!slot->status) {
 			continue;
 		}
 		group = g_strdup_printf(RAUC_SLOT_PREFIX ".%s", slot->name);
 		status_file_set_slot_status(key_file, group, slot->status);
-		g_free(group);
 	}
 
 	res = g_key_file_save_to_file(key_file, r_context()->config->statusfile_path, &ierror);
 	if (!res)
 		g_propagate_error(error, ierror);
-
-	g_key_file_free(key_file);
 
 	return res;
 }

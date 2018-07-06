@@ -91,7 +91,7 @@ typedef struct _RaucSlot {
 	/** flag indicating if the slot is updatable */
 	gboolean readonly;
 	/** flag indicating if the slot update may be forced */
-	gboolean ignore_checksum;
+	gboolean force_install_same;
 
 	/** current state of the slot (runtime) */
 	SlotState state;
@@ -140,6 +140,8 @@ RaucSlot *find_config_slot_by_device(RaucConfig *config, const gchar *device);
  * @param config a RaucConfig
  */
 void free_config(RaucConfig *config);
+
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(RaucConfig, free_config);
 
 /**
  * Load a single slot status from a file into a pre-allocated status structure.
@@ -203,6 +205,8 @@ gboolean save_slot_status(RaucSlot *dest_slot, GError **error);
  * Frees the memory allocated by a RaucSlot
  */
 void r_free_slot(gpointer value);
+
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(RaucSlot, r_free_slot);
 
 /**
  * Check if slot type is mountable.
